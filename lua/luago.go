@@ -5,13 +5,7 @@ package lua
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
-
-int luago_finishpcallk(lua_State* L,int status,lua_KContext ctx);
-void luago_initstate(lua_State* L);
-void luago_pushgoclosure(lua_State* L,int ref);
-int luago_togoclosure(lua_State* L,int idx);
-int luago_upvalueindex(int idx);
-
+#include "luago.h"
 */
 import "C"
 
@@ -20,6 +14,8 @@ import (
 	"strings"
 	"unsafe"
 )
+
+const LUA_OK = int(C.LUA_OK)
 
 type State struct {
 	s       *C.lua_State
@@ -69,8 +65,6 @@ func (s *State) LoadBuffer(buf []byte) int {
 	return int(C.luaL_loadbufferx(s.s, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)), nil, nil))
 }
 
-type GoClosure func(s *State) int
-
 func (s *State) register(obj interface{}) uint {
 	freelen := len(s.freeidx)
 	if freelen == 0 {
@@ -94,23 +88,28 @@ func (s *State) getreg(idx uint) interface{} {
 	return s.reg[idx]
 }
 
-func (s *State) PCall(nargs int) int {
-	return int(C.lua_pcallk(s.s, C.int(nargs), C.LUA_MULTRET, 0, 0, nil))
-}
+type GoKFunction func(*State, int) int
 
 //export finishpcallk
 func finishpcallk(L *C.lua_State, status C.int, ctx C.lua_KContext) int {
 	s := getstate(L)
-	kfunc := s.getreg(uint(ctx)).(func(*State, int) int)
+	kfunc := s.getreg(uint(ctx)).(GoKFunction)
 	s.unregister(uint(ctx))
 	return kfunc(s, int(status))
 }
 
-func (s *State) PCallk(nargs int, call func(*State, int) int) int {
+func (s *State) PCallk(nargs int, call GoKFunction) int {
+	if call == nil {
+		return int(C.lua_pcallk(s.s, C.int(nargs), C.LUA_MULTRET, 0, 0, nil))
+	}
 	ref := s.register(call)
 	status := int(C.lua_pcallk(s.s, C.int(nargs), C.LUA_MULTRET, 0, C.lua_KContext(ref), C.lua_KFunction(C.luago_finishpcallk)))
 	s.unregister(ref)
 	return status
+}
+
+func (s *State) GetGlobalTable() {
+	C.lua_rawgeti(s.s, C.LUA_REGISTRYINDEX, C.LUA_RIDX_GLOBALS)
 }
 
 func (s *State) GetGlobal(name string) {
@@ -145,6 +144,14 @@ func (s *State) SetTable(idx int) {
 	C.lua_settable(s.s, C.int(idx))
 }
 
+func (s *State) SetI(idx int, k int64) {
+	C.lua_seti(s.s, C.int(idx), C.lua_Integer(k))
+}
+
+func (s *State) GetI(idx int, k int64) {
+	C.lua_geti(s.s, C.int(idx), C.lua_Integer(k))
+}
+
 func (s *State) Pop(n int) {
 	C.lua_settop(s.s, C.int(-n-1))
 }
@@ -166,9 +173,11 @@ func (s *State) ltype(idx int) int {
 	return int(C.lua_type(s.s, C.int(idx)))
 }
 
-func (s *State) typename(idx int) string {
+func (s *State) Typename(idx int) string {
 	return C.GoString(C.lua_typename(s.s, C.lua_type(s.s, C.int(idx))))
 }
+
+type GoClosure func(s *State) int
 
 //export gofunccall
 func gofunccall(L *C.lua_State) int {
@@ -207,24 +216,80 @@ func (s *State) togoclosure(idx int) GoClosure {
 	return nil
 }
 
+//export interfacegc
+func interfacegc(L *C.lua_State) int {
+	ref := C.luago_tointerface(L, 1)
+	if ref != nil {
+		s := getstate(L)
+		if ref.refgc >= 0 {
+			v := s.getreg(uint(ref.refi))
+			luagc := s.getreg(uint(ref.refgc)).(func(interface{}))
+			luagc(v)
+			s.unregister(uint(ref.refgc))
+		}
+		s.unregister(uint(ref.refi))
+	}
+	return 0
+}
+
+func (s *State) PushInterface(v interface{}, luagc func(interface{})) {
+	var ref C.struct_Interface
+	ref.refi = C.int(s.register(v))
+	if luagc != nil {
+		ref.refgc = C.int(s.register(luagc))
+	} else {
+		ref.refgc = -1
+	}
+	C.luago_pushinterface(s.s, ref)
+}
+
+func (s *State) tointerface(idx int) interface{} {
+	ref := C.luago_tointerface(s.s, C.int(idx))
+	if ref != nil {
+		return s.getreg(uint(ref.refi))
+	}
+	return nil
+}
+
 func (s *State) pushstring(str string) {
 	cs := C.CString(str)
 	defer C.free(unsafe.Pointer(cs))
 	C.lua_pushstring(s.s, cs)
 }
 
-func (s *State) PushValue(v interface{}) {
+func (s *State) tostring(idx int) string {
+	var len C.size_t
+	cs := C.lua_tolstring(s.s, C.int(idx), &len)
+	return C.GoStringN(cs, C.int(len))
+}
+
+func (s *State) pushboolean(b bool) {
+	if b {
+		C.lua_pushboolean(s.s, 1)
+	} else {
+		C.lua_pushboolean(s.s, 0)
+	}
+}
+
+func (s *State) toboolean(idx int) bool {
+	b := C.lua_toboolean(s.s, C.int(idx))
+	if b == 0 {
+		return false
+	} else {
+		return true
+	}
+}
+
+func (s *State) PushVariant(v interface{}) {
 	switch v := v.(type) {
 	default:
-		C.lua_pushnil(s.s)
+		s.PushInterface(v, nil)
+	case GoClosure:
+		s.pushgoclosure(v)
 	case nil:
 		C.lua_pushnil(s.s)
 	case bool:
-		if v {
-			C.lua_pushboolean(s.s, 1)
-		} else {
-			C.lua_pushboolean(s.s, 0)
-		}
+		s.pushboolean(v)
 	case string:
 		s.pushstring(v)
 	case []byte:
@@ -245,24 +310,17 @@ func (s *State) PushValue(v interface{}) {
 		C.lua_pushinteger(s.s, C.lua_Integer(v))
 	case uint64:
 		C.lua_pushinteger(s.s, C.lua_Integer(v))
-	case GoClosure:
-		s.pushgoclosure(v)
 	}
 }
 
-func (s *State) ToValue(idx int) interface{} {
+func (s *State) ToVariant(idx int) interface{} {
 	switch s.ltype(idx) {
 	default:
 		return nil
 	case C.LUA_TNIL:
 		return nil
 	case C.LUA_TBOOLEAN:
-		b := C.lua_toboolean(s.s, C.int(idx))
-		if b == 0 {
-			return false
-		} else {
-			return true
-		}
+		return s.toboolean(idx)
 	case C.LUA_TNUMBER:
 		n := C.lua_tonumberx(s.s, C.int(idx), nil)
 		i := C.lua_tointegerx(s.s, C.int(idx), nil)
@@ -272,68 +330,216 @@ func (s *State) ToValue(idx int) interface{} {
 			return float64(n)
 		}
 	case C.LUA_TSTRING:
-		var len C.size_t
-		cs := C.lua_tolstring(s.s, C.int(idx), &len)
-		return C.GoStringN(cs, C.int(len))
+		return s.tostring(idx)
+	case C.LUA_TTABLE:
+		return nil
 	case C.LUA_TFUNCTION:
 		return s.togoclosure(idx)
+	case C.LUA_TUSERDATA:
+		return s.tointerface(idx)
 	}
 }
 
-func (s *State) Call(fname string, args []interface{}, call func(*State, []interface{}, error)) ([]interface{}, error) {
-	top := C.lua_gettop(s.s)
-	funcSplit := strings.Split(fname, ".")
-	s.GetGlobal(funcSplit[0])
+// extend functions without lua stack manipulate
+
+func (s *State) pushfield(fname []string) bool {
+	if len(fname) == 0 {
+		return false
+	}
+	s.GetGlobal(fname[0])
 	if s.ltype(-1) == C.LUA_TNIL {
 		s.Pop(1)
-		return nil, errors.New("nil " + funcSplit[0])
+		return false
 	}
-	for i, n := 1, len(funcSplit); i < n; i++ {
+	for i, n := 1, len(fname); i < n; i++ {
 		if s.ltype(-1) != C.LUA_TTABLE {
 			s.Pop(1)
-			return nil, errors.New("nil " + strings.Join(funcSplit[0:i+1], "."))
+			return false
 		}
-		s.GetField(-1, funcSplit[i])
+		s.GetField(-1, fname[i])
 		s.Remove(-2)
 	}
+	return true
+}
+
+func (s *State) getrets(top int) []interface{} {
+	var rets []interface{}
+	for i, n := top+1, int(C.lua_gettop(s.s)); i <= n; i++ {
+		rets = append(rets, s.ToVariant(i))
+	}
+	return rets
+}
+
+func (s *State) Call(fname string, args []interface{}, call func(*State, []interface{}, error) int) ([]interface{}, error) {
+	top := C.lua_gettop(s.s)
+	funcSplit := strings.Split(fname, ".")
+	if !s.pushfield(funcSplit) {
+		return nil, errors.New("nil " + fname)
+	}
 	if s.ltype(-1) != C.LUA_TFUNCTION {
-		err := errors.New(s.typename(-1) + fname)
+		err := errors.New(s.Typename(-1) + fname)
 		s.Pop(1)
 		return nil, err
 	}
 	for _, arg := range args {
-		s.PushValue(arg)
+		s.PushVariant(arg)
 	}
-	setrets := func(s *State, oldtop int) []interface{} {
-		var rets []interface{}
-		for i, n := oldtop+1, int(C.lua_gettop(s.s)); i <= n; i++ {
-			rets = append(rets, s.ToValue(i))
-		}
-		return rets
-	}
-	var status int
+	var aftercall GoKFunction
 	if call != nil {
-		aftercall := func(s *State, status int) int {
+		aftercall = func(s *State, status int) int {
 			if status != C.LUA_OK && status != C.LUA_YIELD {
 				C.lua_settop(s.s, top)
-				call(s, nil, errors.New("yield call "+fname))
-			} else {
-				rets := setrets(s, int(top))
-				C.lua_settop(s.s, top)
-				call(s, rets, nil)
+				return call(s, nil, errors.New("yield call "+fname))
 			}
-			return 0
+			rets := s.getrets(int(top))
+			C.lua_settop(s.s, top)
+			return call(s, rets, nil)
 		}
-		status = s.PCallk(len(args), aftercall)
-	} else {
-		status = s.PCall(len(args))
 	}
+	status := s.PCallk(len(args), aftercall)
 	if status != C.LUA_OK && status != C.LUA_YIELD {
 		C.lua_settop(s.s, top)
 		return nil, errors.New("call " + fname)
-	} else {
-		rets := setrets(s, int(top))
-		C.lua_settop(s.s, top)
-		return rets, nil
 	}
+	rets := s.getrets(int(top))
+	C.lua_settop(s.s, top)
+	return rets, nil
+}
+
+func (s *State) RegFunc(fname string, f GoClosure) {
+	fnames := strings.Split(fname, ".")
+	s.GetGlobalTable() // _G
+	for _, fn := range fnames[0 : len(fnames)-1] {
+		s.GetField(-1, fn) // table field
+		if s.ltype(-1) != C.LUA_TTABLE {
+			s.Remove(-1)                 // table
+			C.lua_createtable(s.s, 0, 0) // table newfield
+			C.lua_pushvalue(s.s, -1)     // table newfield newfield
+			s.SetField(-3, fn)           // table newfield (table[fn]=newfield)
+			s.Remove(-2)                 // newfield
+		}
+		s.Remove(-2) // field
+	}
+	s.pushgoclosure(f) // table f
+	fn := fnames[len(fnames)-1]
+	s.SetField(-2, fn) // table (table[fn]=f)
+	s.Pop(1)
+}
+
+func (s *State) ForEach(idx int, call func() bool) {
+	for C.lua_pushnil(s.s); C.lua_next(s.s, C.int(idx)) != 0; {
+		if call() {
+			s.Pop(2)
+			return
+		}
+		s.Pop(1)
+	}
+}
+
+// used for simplify the traverse over deep tables
+
+type Reference struct {
+	s     *State
+	lref  int
+	child map[interface{}]*Reference
+}
+
+func (s *State) NewReference() *Reference {
+	s.GetGlobalTable()
+	lref := C.luaL_ref(s.s, C.LUA_REGISTRYINDEX)
+	return &Reference{s: s, lref: int(lref)}
+}
+
+func (r *Reference) Release() {
+	if r.lref != C.LUA_NOREF {
+		s := r.s
+		for _, v := range r.child {
+			v.Release()
+		}
+		C.luaL_unref(s.s, C.LUA_REGISTRYINDEX, C.int(r.lref))
+		r.lref = C.LUA_NOREF
+	}
+}
+
+func (r *Reference) Sub(k interface{}) *Reference {
+	if r == nil {
+		return nil
+	}
+	s := r.s
+	s.GetI(C.LUA_REGISTRYINDEX, int64(r.lref)) // r
+	if s.ltype(-1) != C.LUA_TTABLE {
+		s.Pop(1)
+		return nil
+	}
+	if child, ok := r.child[k]; ok {
+		s.Pop(1)
+		return child
+	}
+	s.PushVariant(k) // r k
+	s.GetTable(-2)   // r v
+	if s.ltype(-1) == C.LUA_TNIL {
+		s.Pop(2)
+		return nil
+	}
+	lref := C.luaL_ref(s.s, C.LUA_REGISTRYINDEX) // r
+	s.Pop(1)
+	child := &Reference{s: s, lref: int(lref)}
+	r.child[k] = child
+	return child
+}
+
+func (r *Reference) Get() interface{} {
+	if r == nil {
+		return nil
+	}
+	s := r.s
+	s.GetI(C.LUA_REGISTRYINDEX, int64(r.lref)) // r
+	v := s.ToVariant(-1)
+	s.Pop(1)
+	return v
+}
+
+func (r *Reference) SetFd(k interface{}, v interface{}) {
+	if r == nil {
+		return
+	}
+	s := r.s
+	s.GetI(C.LUA_REGISTRYINDEX, int64(r.lref)) // r
+	if s.ltype(-1) != C.LUA_TTABLE {
+		s.Pop(1)
+		return
+	}
+	if child, ok := r.child[k]; ok {
+		child.Release()
+		delete(r.child, k)
+	}
+	s.PushVariant(k) // r k
+	s.PushVariant(v) // r k v
+	s.SetTable(-3)   // r
+	s.Pop(1)
+}
+
+func (s *State) newref(idx int) *Reference {
+	C.lua_pushvalue(s.s, C.int(idx))
+	if s.ltype(-1) == C.LUA_TNIL {
+		s.Pop(1)
+		return nil
+	}
+	lref := C.luaL_ref(s.s, C.LUA_REGISTRYINDEX)
+	return &Reference{s: s, lref: int(lref)}
+}
+
+func (r *Reference) ForEach(call func(k interface{}, v *Reference) bool) {
+	if r == nil {
+		return
+	}
+	s := r.s
+	s.GetI(C.LUA_REGISTRYINDEX, int64(r.lref)) // r
+	s.ForEach(-1, func() bool {
+		k := s.ToVariant(-2)
+		v := s.newref(-1)
+		defer v.Release()
+		return call(k, v)
+	})
+	s.Pop(1)
 }
