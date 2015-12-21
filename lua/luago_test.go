@@ -16,9 +16,15 @@ func TestMain(m *testing.M) {
 	s.OpenLibs()
 	c := m.Run()
 	fmt.Println("top=", s.GetTop())
-	fmt.Println("regnum=", len(s.g.reg), "freeidx=", len(s.g.freeidx))
+	fmt.Println("regnum=", len(s.g.reg), "freeidx=", len(s.g.freeidx), "tplen=", len(s.g.tp))
+	s.GC()
+	for k, reft := range s.g.tp {
+		s.unregister(reft)
+		delete(s.g.tp, k)
+	}
+	fmt.Println("regnum=", len(s.g.reg), "freeidx=", len(s.g.freeidx), "tplen=", len(s.g.tp))
 	s.Close()
-	fmt.Println("regnum=", len(s.g.reg), "freeidx=", len(s.g.freeidx))
+	fmt.Println("regnum=", len(s.g.reg), "freeidx=", len(s.g.freeidx), "tplen=", len(s.g.tp))
 	fmt.Println("test end")
 	os.Exit(c)
 }
@@ -115,6 +121,9 @@ func TestRegister(t *testing.T) {
 	ret, ok := s.Call("test.Method", v, "meth")
 	fmt.Println("ret=", ret[0].(*luaStruct))
 	fmt.Println(ret, ok, v)
+	r := s.NewReference()
+	defer r.Release()
+	r.Sub("gofunc").Sub("test").SetFd("luaFunc", nil)
 	fmt.Println("end top=", s.GetTop())
 }
 

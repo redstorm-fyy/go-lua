@@ -84,6 +84,9 @@ func (s *State) register(obj interface{}) uint {
 		return uint(len(s.g.reg)) - 1
 	}
 	idx := s.g.freeidx[freelen-1]
+	if s.g.reg[idx] != nil {
+		panic(s.g.reg[idx])
+	}
 	s.g.reg[idx] = obj
 	s.g.freeidx = s.g.freeidx[0 : freelen-1]
 	return idx
@@ -233,6 +236,14 @@ func (s *State) ltype(idx int) int {
 
 func (s *State) Typename(idx int) string {
 	return C.GoString(C.lua_typename(s.s, C.lua_type(s.s, C.int(idx))))
+}
+
+func (s *State) GC() {
+	C.lua_gc(s.s, C.LUA_GCCOLLECT, 0)
+}
+
+func (s *State) GCStep() {
+	C.lua_gc(s.s, C.LUA_GCSTEP, 0)
 }
 
 type GoClosure func(s *State) int
@@ -540,13 +551,14 @@ func (s *State) NewReference() *Reference {
 
 func (r *Reference) Release() {
 	if r.lref != C.LUA_NOREF {
+		lref := r.lref
 		r.lref = C.LUA_NOREF
 		s := r.s
 		for _, v := range r.child {
 			v.Release()
 		}
 		r.child = nil
-		C.luaL_unref(s.s, C.LUA_REGISTRYINDEX, C.int(r.lref))
+		C.luaL_unref(s.s, C.LUA_REGISTRYINDEX, C.int(lref))
 	}
 }
 
