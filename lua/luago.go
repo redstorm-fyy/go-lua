@@ -439,7 +439,7 @@ func (s *State) getrets(top int) []interface{} {
 	return rets
 }
 
-func (s *State) Call(fname string, call func(*State, []interface{}, bool) int, args ...interface{}) ([]interface{}, bool) {
+func (s *State) Call(fname string, args ...interface{}) ([]interface{}, bool) {
 	top := C.lua_gettop(s.s)
 	funcSplit := strings.Split(fname, ".")
 	if !s.pushfield(funcSplit) {
@@ -452,19 +452,7 @@ func (s *State) Call(fname string, call func(*State, []interface{}, bool) int, a
 	for _, arg := range args {
 		s.PushVariant(arg)
 	}
-	var aftercall GoKFunction
-	if call != nil {
-		aftercall = func(s *State, status int) int {
-			if status != C.LUA_OK && status != C.LUA_YIELD {
-				C.lua_settop(s.s, top)
-				return call(s, nil, false)
-			}
-			rets := s.getrets(int(top))
-			C.lua_settop(s.s, top)
-			return call(s, rets, true)
-		}
-	}
-	status := s.PCallk(len(args), aftercall)
+	status := s.PCallk(len(args), nil)
 	if status != C.LUA_OK && status != C.LUA_YIELD {
 		C.lua_settop(s.s, top)
 		return nil, false

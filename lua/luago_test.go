@@ -27,9 +27,9 @@ func TestCallMe(t *testing.T) {
 	fmt.Println("begin top=", s.GetTop())
 	fmt.Println("LoadFile ", s.LoadFile("luago_test.lua"))
 	fmt.Println("PCallk ", s.PCallk(0, nil))
-	ret, ok := s.Call("test.CallMe", nil, 23, "haha")
+	ret, ok := s.Call("test.CallMe", 23, "haha")
 	fmt.Println("Call ", ret, ok)
-	ret, ok = s.Call("NotExist", nil, 3)
+	ret, ok = s.Call("NotExist", 3)
 	fmt.Println("Call ", ret, ok)
 	fmt.Println("end top=", s.GetTop())
 }
@@ -91,7 +91,7 @@ func testReg1() {
 	fmt.Println("top1=", s.GetTop())
 	v := &luaStruct{x: 5, str: "abc"}
 	fmt.Println("v=", v)
-	ret, ok := s.Call("test.Register", nil, v, "arg2")
+	ret, ok := s.Call("test.Register", v, "arg2")
 	fmt.Println("top2=", s.GetTop(), ret, ok)
 	fmt.Println("ret=", ret[1].(*luaStruct))
 	fmt.Println("v=", v)
@@ -100,7 +100,7 @@ func testReg2() {
 	fmt.Println("top3=", s.GetTop())
 	v := luaStruct{x: 5, str: "abc"}
 	fmt.Println("v=", v)
-	ret, ok := s.Call("test.Register", nil, v, "arg2")
+	ret, ok := s.Call("test.Register", v, "arg2")
 	fmt.Println("top4=", s.GetTop(), ret, ok)
 	fmt.Println("ret=", ret[1].(luaStruct))
 	fmt.Println("v=", v)
@@ -112,7 +112,7 @@ func TestRegister(t *testing.T) {
 	testReg2()
 	s.RegMethod((*luaStruct)(nil), "mymethod", luaMethod)
 	v := &luaStruct{x: 2, str: "dd"}
-	ret, ok := s.Call("test.Method", nil, v, "meth")
+	ret, ok := s.Call("test.Method", v, "meth")
 	fmt.Println("ret=", ret[0].(*luaStruct))
 	fmt.Println(ret, ok, v)
 	fmt.Println("end top=", s.GetTop())
