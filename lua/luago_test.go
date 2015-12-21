@@ -16,9 +16,9 @@ func TestMain(m *testing.M) {
 	s.OpenLibs()
 	c := m.Run()
 	fmt.Println("top=", s.GetTop())
-	fmt.Println("regnum=", len(s.reg), "freeidx=", len(s.freeidx))
+	fmt.Println("regnum=", len(s.g.reg), "freeidx=", len(s.g.freeidx))
 	s.Close()
-	fmt.Println("regnum=", len(s.reg), "freeidx=", len(s.freeidx))
+	fmt.Println("regnum=", len(s.g.reg), "freeidx=", len(s.g.freeidx))
 	fmt.Println("test end")
 	os.Exit(c)
 }

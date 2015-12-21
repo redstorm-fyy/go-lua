@@ -16,12 +16,17 @@ import (
 )
 
 const LUA_OK = int(C.LUA_OK)
+const LUA_YIELD = int(C.LUA_YIELD)
 
-type State struct {
-	s       *C.lua_State
+type global struct {
 	reg     []interface{}
 	freeidx []uint
 	tp      map[reflect.Type]uint
+}
+
+type State struct {
+	s *C.lua_State
+	g *global
 }
 
 func NewState() *State {
@@ -31,7 +36,7 @@ func NewState() *State {
 	C.lua_pushlightuserdata(L, unsafe.Pointer(s))
 	C.lua_settable(L, C.LUA_REGISTRYINDEX)
 	C.luago_initstate(L)
-	s.tp = make(map[reflect.Type]uint)
+	s.g = &global{tp: make(map[reflect.Type]uint)}
 	return s
 }
 
@@ -44,10 +49,10 @@ func getstate(L *C.lua_State) *State {
 }
 
 func (s *State) Close() {
-	for _, reft := range s.tp {
+	for _, reft := range s.g.tp {
 		s.unregister(reft)
 	}
-	s.tp = nil
+	s.g.tp = nil
 	C.lua_close(s.s)
 	s.s = nil
 }
@@ -73,26 +78,59 @@ func (s *State) LoadBuffer(buf []byte) int {
 }
 
 func (s *State) register(obj interface{}) uint {
-	freelen := len(s.freeidx)
+	freelen := len(s.g.freeidx)
 	if freelen == 0 {
-		s.reg = append(s.reg, obj)
-		return uint(len(s.reg)) - 1
+		s.g.reg = append(s.g.reg, obj)
+		return uint(len(s.g.reg)) - 1
 	}
-	idx := s.freeidx[freelen-1]
-	s.reg[idx] = obj
-	s.freeidx = s.freeidx[0 : freelen-1]
+	idx := s.g.freeidx[freelen-1]
+	s.g.reg[idx] = obj
+	s.g.freeidx = s.g.freeidx[0 : freelen-1]
 	return idx
 }
 
 func (s *State) unregister(idx uint) {
-	if s.reg[idx] != nil {
-		s.reg[idx] = nil
-		s.freeidx = append(s.freeidx, idx)
+	if s.g.reg[idx] != nil {
+		s.g.reg[idx] = nil
+		s.g.freeidx = append(s.g.freeidx, idx)
 	}
 }
 
 func (s *State) getreg(idx uint) interface{} {
-	return s.reg[idx]
+	return s.g.reg[idx]
+}
+
+func (s *State) NewThread() *State {
+	L := C.lua_newthread(s.s)
+	ts := &State{s: L, g: s.g}
+	// there is no thread metatable to release the registry,so we do not use registry to save thread state.
+	// otherwise,we create a different thread state in State.ToThread.so the same thread means State.s is same not *State is same
+	//C.lua_pushlightuserdata(L, unsafe.Pointer(L))
+	//C.lua_pushlightuserdata(L, unsafe.Pointer(ts))
+	//C.lua_settable(L, C.LUA_REGISTRYINDEX)
+	return ts
+}
+
+func (s *State) PushThread() {
+	C.lua_pushthread(s.s)
+}
+
+func (s *State) XMove(to *State, n int) {
+	C.lua_xmove(s.s, to.s, C.int(n))
+}
+
+func (s *State) ToThread(idx int) *State {
+	L := C.lua_tothread(s.s, C.int(idx))
+	return &State{s: L, g: s.g}
+	//return getstate(L)
+}
+
+func (s *State) Equal(ts *State) bool {
+	return s.s == ts.s
+}
+
+func (s *State) Resume(nargs int) int {
+	return int(C.lua_resume(s.s, nil, C.int(nargs)))
 }
 
 type GoKFunction func(*State, int) int
@@ -176,6 +214,19 @@ func (s *State) Remove(idx int) {
 	s.Pop(1)
 }
 
+func (s *State) PushValue(idx int) {
+	C.lua_pushvalue(s.s, C.int(idx))
+}
+
+func (s *State) Insert(idx int) {
+	C.lua_rotate(s.s, C.int(idx), 1)
+}
+
+func (s *State) Replace(idx int) {
+	C.lua_copy(s.s, -1, C.int(idx))
+	s.Pop(1)
+}
+
 func (s *State) ltype(idx int) int {
 	return int(C.lua_type(s.s, C.int(idx)))
 }
@@ -224,11 +275,11 @@ func (s *State) togoclosure(idx int) GoClosure {
 }
 
 func (s *State) typeref(t reflect.Type) uint {
-	if reft, ok := s.tp[t]; ok {
+	if reft, ok := s.g.tp[t]; ok {
 		return reft
 	}
 	reft := s.register(t)
-	s.tp[t] = reft
+	s.g.tp[t] = reft
 	return reft
 }
 
