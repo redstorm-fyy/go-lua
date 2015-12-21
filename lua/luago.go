@@ -31,6 +31,7 @@ func NewState() *State {
 	C.lua_pushlightuserdata(L, unsafe.Pointer(s))
 	C.lua_settable(L, C.LUA_REGISTRYINDEX)
 	C.luago_initstate(L)
+	s.tp = make(map[reflect.Type]uint)
 	return s
 }
 
@@ -43,7 +44,12 @@ func getstate(L *C.lua_State) *State {
 }
 
 func (s *State) Close() {
+	for _, reft := range s.tp {
+		s.unregister(reft)
+	}
+	s.tp = nil
 	C.lua_close(s.s)
+	s.s = nil
 }
 
 func (s *State) OpenLibs() {
@@ -382,7 +388,7 @@ func (s *State) getrets(top int) []interface{} {
 	return rets
 }
 
-func (s *State) Call(fname string, args []interface{}, call func(*State, []interface{}, bool) int) ([]interface{}, bool) {
+func (s *State) Call(fname string, call func(*State, []interface{}, bool) int, args ...interface{}) ([]interface{}, bool) {
 	top := C.lua_gettop(s.s)
 	funcSplit := strings.Split(fname, ".")
 	if !s.pushfield(funcSplit) {
@@ -427,7 +433,6 @@ func (s *State) RegFunc(fname string, f GoClosure) {
 			C.lua_createtable(s.s, 0, 0) // table newfield
 			C.lua_pushvalue(s.s, -1)     // table newfield newfield
 			s.SetField(-3, fn)           // table newfield (table[fn]=newfield)
-			s.Remove(-2)                 // newfield
 		}
 		s.Remove(-2) // field
 	}
@@ -467,6 +472,9 @@ func (s *State) RegMethod(v interface{}, name string, f GoClosure) {
 }
 
 func (s *State) ForEach(idx int, call func() bool) {
+	if idx < 0 {
+		idx -= 1
+	}
 	for C.lua_pushnil(s.s); C.lua_next(s.s, C.int(idx)) != 0; {
 		if call() {
 			s.Pop(2)
@@ -487,7 +495,7 @@ type Reference struct {
 func (s *State) NewReference() *Reference {
 	s.GetGlobalTable()
 	lref := C.luaL_ref(s.s, C.LUA_REGISTRYINDEX)
-	return &Reference{s: s, lref: int(lref)}
+	return &Reference{s: s, lref: int(lref), child: make(map[interface{}]*Reference)}
 }
 
 func (r *Reference) Release() {
@@ -496,6 +504,7 @@ func (r *Reference) Release() {
 		for _, v := range r.child {
 			v.Release()
 		}
+		r.child = nil
 		C.luaL_unref(s.s, C.LUA_REGISTRYINDEX, C.int(r.lref))
 		r.lref = C.LUA_NOREF
 	}
@@ -523,7 +532,7 @@ func (r *Reference) Sub(k interface{}) *Reference {
 	}
 	lref := C.luaL_ref(s.s, C.LUA_REGISTRYINDEX) // r
 	s.Pop(1)
-	child := &Reference{s: s, lref: int(lref)}
+	child := &Reference{s: s, lref: int(lref), child: make(map[interface{}]*Reference)}
 	r.child[k] = child
 	return child
 }
@@ -566,7 +575,7 @@ func (s *State) newref(idx int) *Reference {
 		return nil
 	}
 	lref := C.luaL_ref(s.s, C.LUA_REGISTRYINDEX)
-	return &Reference{s: s, lref: int(lref)}
+	return &Reference{s: s, lref: int(lref), child: make(map[interface{}]*Reference)}
 }
 
 func (r *Reference) ForEach(call func(k interface{}, v *Reference) bool) {
