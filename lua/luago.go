@@ -472,8 +472,9 @@ func (s *State) RegMethod(v interface{}, name string, f GoClosure) {
 }
 
 func (s *State) ForEach(idx int, call func() bool) {
-	if idx < 0 {
-		idx -= 1
+	if idx < 0 && idx > C.LUA_REGISTRYINDEX {
+		top := s.GetTop()
+		idx = top + idx + 1
 	}
 	for C.lua_pushnil(s.s); C.lua_next(s.s, C.int(idx)) != 0; {
 		if call() {
@@ -500,13 +501,13 @@ func (s *State) NewReference() *Reference {
 
 func (r *Reference) Release() {
 	if r.lref != C.LUA_NOREF {
+		r.lref = C.LUA_NOREF
 		s := r.s
 		for _, v := range r.child {
 			v.Release()
 		}
 		r.child = nil
 		C.luaL_unref(s.s, C.LUA_REGISTRYINDEX, C.int(r.lref))
-		r.lref = C.LUA_NOREF
 	}
 }
 
@@ -584,6 +585,10 @@ func (r *Reference) ForEach(call func(k interface{}, v *Reference) bool) {
 	}
 	s := r.s
 	s.GetI(C.LUA_REGISTRYINDEX, int64(r.lref)) // r
+	if s.ltype(-1) != C.LUA_TTABLE {
+		s.Pop(1)
+		return
+	}
 	s.ForEach(-1, func() bool {
 		k := s.ToVariant(-2)
 		v := s.newref(-1)

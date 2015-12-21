@@ -118,10 +118,6 @@ func TestRegister(t *testing.T) {
 	fmt.Println("end top=", s.GetTop())
 }
 
-func TestYield(t *testing.T) {
-	// yield and anything run setjmp/longjmp on golang1.5.2 will crash can cannot be tested yet
-}
-
 func TestReference(t *testing.T) {
 	fmt.Println("top1=", s.GetTop())
 	r := s.NewReference()
@@ -132,13 +128,19 @@ func TestReference(t *testing.T) {
 	subr := r.Sub("RefTable")
 	v := subr.Sub(1).Sub(3).Sub("haha").Get().(string)
 	fmt.Println("v=", v)
+	subr.Sub(1).SetFd("b", "bvalue")
+	subr.Sub(1).SetFd("c", "cvalue")
 	subr.ForEach(func(k interface{}, v *Reference) bool {
-		fmt.Println("tra top=", s.GetTop())
+		fmt.Println("tra top=", s.GetTop(), "k=", k, "v=", v.Get())
 		v.ForEach(func(k interface{}, v *Reference) bool {
-			fmt.Println("k=", k, "v=", v.Get())
+			fmt.Println("sub top=", s.GetTop(), "k=", k, "v=", v.Get())
 			return false
 		})
 		return false
 	})
 	fmt.Println("top2=", s.GetTop())
+}
+
+func TestYield(t *testing.T) {
+	// yield and anything run setjmp/longjmp on golang1.5.2 will crash can cannot be tested yet
 }
